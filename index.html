@@ -15,9 +15,31 @@
 <section id="page-settings" class="hidden"><div class="card" style="margin-bottom:18px"><h3>☁️ アカウント・クラウド保存</h3><p class="sub" style="line-height:1.8">アカウントを作ると、学習記録をクラウドに保存して別の端末でも使えるようにできます。登録にはメールアドレスとパスワードを使います。</p><div class="field"><label>メールアドレス</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@example.com"></div><div class="field"><label>パスワード（8文字以上推奨）</label><input id="authPassword" type="password" autocomplete="current-password" minlength="8" placeholder="パスワード"></div><div class="actions"><button class="btn dark" onclick="signIn()">ログイン</button><button class="btn" onclick="signUp()">新規登録</button><button class="btn" onclick="signOut()">ログアウト</button></div><div id="cloudStatus" class="notice" role="status">クラウド接続を確認しています…</div></div><div class="sectionhead"><div><h2>データ管理</h2><p>学習記録を自分で管理しよう。</p></div></div><div class="grid" style="grid-template-columns:1fr 1fr"><div class="card"><h3>バックアップ</h3><p class="sub" style="line-height:1.8">データはこのブラウザの端末内に保存されます。ブラウザのデータ削除や別端末では記録が消えたり共有されなかったりするため、定期的に書き出してください。</p><div class="actions"><button class="btn dark" onclick="exportData()">JSONを書き出す</button><label class="btn" for="importFile">バックアップを読み込む</label><input class="hidden" id="importFile" type="file" accept=".json,application/json" onchange="importData(event)"></div></div><div class="card"><h3>記録をリセット</h3><p class="sub" style="line-height:1.8">学習タスク・テスト結果・目標をすべて削除します。この操作は取り消せません。</p><button class="btn" onclick="clearData()">すべてのデータを削除</button></div></div><div class="notice">アカウントのパスワードはStudy+のデータテーブルには保存されず、Supabase Authが管理します。外部AI接続はまだ未設定です。APIキーをこのページに入力しないでください。</div></section>
 </main></div><footer class="foot">Study+ · 学びを、自分の力に。　|　試作版 0.1</footer></div><div class="toast" id="toast"></div>
 <script>
-const KEY='studyplus_v1';const SUPABASE_URL='https://xncxhxxecosqudtgkzxq.supabase.co';const SUPABASE_KEY='sb_publishable_O0Tr_DSzwQEJg3Gekn4PGg_7gb_9rke';const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);let cloudUser=null,cloudLoading=false,cloudWriteBusy=false;const today=()=>new Date().toISOString().slice(0,10);let data=load();function load(){try{return JSON.parse(localStorage.getItem(KEY))||{tasks:[],tests:[],goal:{school:'',note:'',weekly:420},points:0,logs:[]}}catch{return{tasks:[],tests:[],goal:{school:'',note:'',weekly:420},points:0,logs:[]}}}function save(){localStorage.setItem(KEY,JSON.stringify(data));render();syncCloud()}
+const KEY='studyplus_v1';const SUPABASE_URL='https://xncxhxxecosqudtgkzxq.supabase.co';const SUPABASE_KEY='sb_publishable_O0Tr_DSzwQEJg3Gekn4PGg_7gb_9rke';const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);let cloudUser=null,cloudLoading=false,cloudWriteBusy=false,cloudSyncRequested=false;const today=()=>new Date().toISOString().slice(0,10);let data=load();function load(){try{return JSON.parse(localStorage.getItem(KEY))||{tasks:[],tests:[],goal:{school:'',note:'',weekly:420},points:0,logs:[]}}catch{return{tasks:[],tests:[],goal:{school:'',note:'',weekly:420},points:0,logs:[]}}}function save(){localStorage.setItem(KEY,JSON.stringify(data));render();syncCloud()}
+
 function setCloudStatus(msg){const el=document.getElementById('cloudStatus');if(el)el.textContent=msg}
-async function syncCloud(){if(!cloudUser||cloudLoading||cloudWriteBusy)return;cloudWriteBusy=true;try{const {error}=await sb.from('study_user_data').upsert({user_id:cloudUser.id,data:data,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)throw error;setCloudStatus('☁️ クラウド保存中：'+cloudUser.email+' ／ 最新の学習記録を保存しました。')}catch(e){console.error('Cloud save error',e);setCloudStatus('クラウド保存に失敗しました。通信状態を確認し、再ログインしてください。')}finally{cloudWriteBusy=false}}
+async function syncCloud(){
+  if(!cloudUser||cloudLoading)return;
+  if(cloudWriteBusy){cloudSyncRequested=true;return}
+  cloudWriteBusy=true;
+  try{
+    do{
+      cloudSyncRequested=false;
+      const userId=cloudUser?.id;
+      if(!userId)break;
+      const snapshot=JSON.parse(JSON.stringify(data));
+      const {error}=await sb.from('study_user_data').upsert({user_id:userId,data:snapshot,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+      if(error)throw error;
+    }while(cloudSyncRequested&&cloudUser);
+    if(cloudUser)setCloudStatus('☁️ クラウド保存中：'+cloudUser.email+' ／ 最新の学習記録を保存しました。');
+  }catch(e){
+    console.error('Cloud save error',e);
+    setCloudStatus('クラウド保存に失敗しました。通信状態を確認し、再ログインしてください。');
+  }finally{
+    cloudWriteBusy=false;
+    if(cloudSyncRequested&&cloudUser&&!cloudLoading){cloudSyncRequested=false;syncCloud()}
+  }
+}
 async function loadCloudForUser(user){if(!user){cloudUser=null;setCloudStatus('未ログイン：この端末のブラウザに保存しています。');return}cloudUser=user;cloudLoading=true;setCloudStatus('クラウドから学習記録を読み込んでいます…');try{const {data:row,error}=await sb.from('study_user_data').select('data').eq('user_id',user.id).maybeSingle();if(error)throw error;if(row&&row.data&&Array.isArray(row.data.tasks)&&Array.isArray(row.data.tests)){data={...data,...row.data};localStorage.setItem(KEY,JSON.stringify(data));render();setCloudStatus('☁️ ログイン中：'+user.email+' ／ クラウドの学習記録を読み込みました。')}else{const {error:writeError}=await sb.from('study_user_data').upsert({user_id:user.id,data:data,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(writeError)throw writeError;setCloudStatus('☁️ ログイン中：'+user.email+' ／ この端末の記録をクラウドに保存しました。')}}catch(e){console.error('Cloud load error',e);setCloudStatus('クラウド接続エラー：'+(e.message||'設定を確認してください'))}finally{cloudLoading=false}}
 async function signUp(){const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||!password)return toast('メールアドレスとパスワードを入力してください');if(password.length<8)return toast('パスワードは8文字以上にしてください');setCloudStatus('アカウントを作成しています…');const {data:result,error}=await sb.auth.signUp({email,password});if(error){setCloudStatus('登録エラー：'+error.message);return}if(result.session){await loadCloudForUser(result.user);toast('アカウントを作成しました')}else{setCloudStatus('確認メールを送信しました。メール内のリンクで登録を確認してからログインしてください。');toast('確認メールを確認してください')}}
 async function signIn(){const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||!password)return toast('メールアドレスとパスワードを入力してください');setCloudStatus('ログインしています…');const {data:result,error}=await sb.auth.signInWithPassword({email,password});if(error){setCloudStatus('ログインできませんでした：'+error.message);return}await loadCloudForUser(result.user);toast('ログインしました')}
